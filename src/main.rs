@@ -8,8 +8,10 @@ extern crate lazy_static;
 use bitflags::bitflags;
 
 fn main() {
-    println!("{:8b}", 8 as i8);
-    println!("{:b}", (8 as i8).wrapping_neg() as u8);
+    // println!("{:8b}", 8 as i8);
+    // println!("{:b}", (8 as i8).wrapping_neg() as u8);
+    let d: u8 = 0b0100_0000;
+    println!("{}", (d & 0b0100_0000) >> 6)
 }
 
 bitflags! {
@@ -29,17 +31,6 @@ impl Default for CpuFlags {
     fn default() -> Self {
         CpuFlags::from_bits(0b0010_0100).unwrap()
     }
-}
-
-enum Instruction {
-    ADC(u16), // Add with Carry
-    SBC(u16), // Subtract with Carry
-    AND(u16), // Logical AND
-    BRK, // Force Interrupt
-    LDA(u16), // Load Accumulator
-    STA(u16), // Store Accumulator
-    TAX, // Transfer accumulator to x,
-    INX, // Increment X Register
 }
 
 struct CPU {
@@ -173,52 +164,88 @@ impl CPU {
 
     }
 
-    fn load_instruction(&mut self) -> Instruction {
-        let code = self.next_u8();
-        let opcode = ops::OPCODES_MAP.get(&code).unwrap();
-        let instruction = match opcode.op {
-            ops::OP::ADC => {
-                let addr = self.get_operand_address(&opcode.mode);
-                Instruction::ADC(addr)
-            },
-            ops::OP::SBC => {
-                let addr = self.get_operand_address(&opcode.mode);
-                Instruction::SBC(addr)
-            }
-            ops::OP::AND => {
-                let addr = self.get_operand_address(&opcode.mode);
-                Instruction::AND(addr)
-            }
-            ops::OP::BRK => Instruction::BRK,
-            ops::OP::LDA => {
-                let addr = self.get_operand_address(&opcode.mode);
-                Instruction::LDA(addr)
-            },
-            ops::OP::INX => Instruction::INX,
-            ops::OP::NOP => todo!(),
-            ops::OP::STA => {
-                let addr = self.get_operand_address(&opcode.mode);
-                Instruction::STA(addr)
-            },
-            ops::OP::TAX => Instruction::TAX,
-        };
-        self.program_counter += (opcode.len - 1) as u16;
-        instruction
-    }
-
     fn run(&mut self) {
         loop {
-            let instruction = self.load_instruction();
-            match instruction {
-                Instruction::BRK => return,
-                Instruction::LDA(param) => self.lda(param),
-                Instruction::TAX => self.tax(),
-                Instruction::INX => self.inx(),
-                Instruction::ADC(addr) => self.adc(addr),
-                Instruction::SBC(addr) => todo!(),
-                Instruction::AND(addr) => self.and(addr),
-                Instruction::STA(addr) => self.sta(addr),
-            }
+            let code = self.next_u8();
+            let opcode = ops::OPCODES_MAP.get(&code).unwrap();
+            match opcode.op {
+                ops::OP::ADC => {
+                    let addr = self.get_operand_address(&opcode.mode);
+                    self.adc(addr);
+                },
+                ops::OP::SBC => {
+                    let addr = self.get_operand_address(&opcode.mode);
+                    self.sbc(addr);
+                }
+                ops::OP::INC => {
+                    let addr = self.get_operand_address(&opcode.mode);
+                    self.inc(addr);
+                },
+                ops::OP::INX => self.inx(),
+                ops::OP::INY => self.iny(),
+                ops::OP::DEC => {
+                    let addr = self.get_operand_address(&opcode.mode);
+                    self.dec(addr);
+                }
+                ops::OP::AND => {
+                    let addr = self.get_operand_address(&opcode.mode);
+                    self.and(addr);
+                }
+                ops::OP::EOR => {
+                    let addr = self.get_operand_address(&opcode.mode);
+                    self.eor(addr);
+                }
+                ops::OP::ORA => {
+                    let addr = self.get_operand_address(&opcode.mode);
+                    self.ora(addr);
+                }
+                ops::OP::ASL => {
+                    if opcode.mode == AddressingMode::NoneAddressing {
+                        self.asl_accumulator();
+                    } else {
+                        let addr = self.get_operand_address(&opcode.mode);
+                        self.asl(addr)
+                    }
+                }
+                ops::OP::LSR => {
+                    if opcode.mode == AddressingMode::NoneAddressing {
+                        self.lsr_accumulator();
+                    } else {
+                        let addr = self.get_operand_address(&opcode.mode);
+                        self.lsr(addr)
+                    }
+                }
+                ops::OP::ROL => {
+                    if opcode.mode == AddressingMode::NoneAddressing {
+                        self.rol_accumulator();
+                    } else {
+                        let addr = self.get_operand_address(&opcode.mode);
+                        self.rol(addr)
+                    }
+                },
+                ops::OP::ROR => {
+                    if opcode.mode == AddressingMode::NoneAddressing {
+                        self.ror_accumulator();
+                    } else {
+                        let addr = self.get_operand_address(&opcode.mode);
+                        self.ror(addr)
+                    }
+                }
+                ops::OP::BRK => return,
+                ops::OP::LDA => {
+                    let addr = self.get_operand_address(&opcode.mode);
+                    self.lda(addr);
+                },
+                ops::OP::NOP => todo!(),
+                ops::OP::STA => {
+                    let addr = self.get_operand_address(&opcode.mode);
+                    self.sta(addr);
+                },
+                ops::OP::TAX => self.tax(),
+            };
+
+            // Note might have to be careful here when doing a jump instruction
+            self.program_counter += (opcode.len - 1) as u16;
         }
     }
 
@@ -259,9 +286,128 @@ impl CPU {
         self.add_to_register_a((data as i8).wrapping_neg().wrapping_sub(1) as u8)
     }
 
+    fn inc(&mut self, addr: u16) {
+        let byte = self.mem_read(addr);
+        let result = if byte == 0b1111_1111 { 0 } else { byte + 1 };
+        self.mem_write(addr, result);
+        self.update_zero_and_negative_flags(result);
+    }
+
+    fn inx(&mut self) {
+        if self.register_x == 0b1111_1111 {
+            self.register_x = 0 // overflow to 0
+        } else {
+            self.register_x += 1;
+        }
+
+        self.update_zero_and_negative_flags(self.register_x)
+    }
+
+    fn iny(&mut self) {
+        if self.register_y == 0b1111_1111 {
+            self.register_y = 0 // overflow to 0
+        } else {
+            self.register_y += 1;
+        }
+
+        self.update_zero_and_negative_flags(self.register_y)
+    }
+
+    // fn dec(&mut self)
+
     fn and(&mut self, addr: u16) {
         let data = self.mem_read(addr);
         self.set_register_a(self.register_a & data);
+    }
+
+    fn eor(&mut self, addr: u16) {
+        let data = self.mem_read(addr);
+        self.set_register_a(self.register_a ^ data);
+    }
+
+    fn ora(&mut self, addr: u16) {
+        let data = self.mem_read(addr);
+        self.set_register_a(self.register_a | data);
+    }
+
+    fn asl(&mut self, addr: u16) {
+        let data = self.mem_read(addr);
+
+        // 7th bit is placed in the carry flag
+        self.status.set(CpuFlags::CARRY, data >> 7 == 1);
+
+        let shifted = data << 1;
+        self.mem_write(addr, shifted);
+        self.update_zero_and_negative_flags(shifted);
+    }
+
+    fn asl_accumulator(&mut self) {
+        let data = self.register_a;
+        // 7th bit is placed in the carry flag
+        self.status.set(CpuFlags::CARRY, data >> 7 == 1);
+        self.set_register_a(data << 1)
+    }
+
+    fn lsr(&mut self, addr: u16) {
+        let data = self.mem_read(addr);
+        // 0th bit gets places in the carry flag
+        self.status.set(CpuFlags::CARRY, (data & 0b0000_0001) == 1);
+        let shifted = data >> 1;
+        self.mem_write(addr, shifted);
+        self.update_zero_and_negative_flags(shifted);
+    }
+
+    fn lsr_accumulator(&mut self) {
+        let data = self.register_a;
+        // 0th bit gets places in the carry flag
+        self.status.set(CpuFlags::CARRY, (data & 0b0000_0001) == 1);
+        self.set_register_a(data >> 1)
+    }
+
+    fn rol(&mut self, addr: u16) {
+        let data = self.mem_read(addr);
+        let carry_in_bit: u8 = if self.status.contains(CpuFlags::CARRY) { 1 } else { 0 };
+
+        // 7th bit moved to carry flag
+        self.status.set(CpuFlags::CARRY, data >> 7 == 1);
+
+        let rotated = (data << 1) | carry_in_bit;
+        self.mem_write(addr, rotated);
+        self.update_zero_and_negative_flags(rotated);
+    }
+
+    fn rol_accumulator(&mut self) {
+        let data = self.register_a;
+        let carry_in_bit: u8 = if self.status.contains(CpuFlags::CARRY) { 1 } else { 0 };
+
+        // 7th bit moved to carry flag
+        self.status.set(CpuFlags::CARRY, data >> 7 == 1);
+
+        let rotated = (data << 1) | carry_in_bit;
+        self.set_register_a(rotated);
+    }
+
+    fn ror(&mut self, addr: u16) {
+        let data = self.mem_read(addr);
+        let carry_in_bit = if self.status.contains(CpuFlags::CARRY) { 1 << 7 } else { 0 };
+
+        // 0th bit moved to carry flag
+        self.status.set(CpuFlags::CARRY, (data & 0b0000_0001) == 1);
+
+        let rotated = (data >> 1) | carry_in_bit;
+        self.mem_write(addr, rotated);
+        self.update_zero_and_negative_flags(rotated);
+    }
+
+    fn ror_accumulator(&mut self) {
+        let data = self.register_a;
+        let carry_in_bit = if self.status.contains(CpuFlags::CARRY) { 1 << 7 } else { 0 };
+
+        // 0th bit moved to carry flag
+        self.status.set(CpuFlags::CARRY, (data & 0b0000_0001) == 1);
+
+        let rotated = (data >> 1) | carry_in_bit;
+        self.set_register_a(rotated);
     }
 
     fn lda(&mut self, addr: u16) {
@@ -275,22 +421,9 @@ impl CPU {
         self.update_zero_and_negative_flags(self.register_x);
     }
 
-    fn inx(&mut self) {
-        if self.register_x == 0b1111_1111 {
-            self.register_x = 0 // overflow to 0
-        } else {
-            self.register_x += 1;
-        }
-
-        self.update_zero_and_negative_flags(self.register_x)
-    }
-
     fn sta(&mut self, addr: u16) {
         self.mem_write(addr, self.register_a);
     }
-
-
-
 
 }
 
