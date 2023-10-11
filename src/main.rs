@@ -7,6 +7,8 @@ extern crate lazy_static;
 
 use bitflags::bitflags;
 
+const INDIRECT_ADDRESSING_MODE_6502_BUG: bool = true;
+
 fn main() {
     // println!("{:8b}", 8 as i8);
     // println!("{:b}", (8 as i8).wrapping_neg() as u8);
@@ -66,7 +68,7 @@ impl CPU {
     fn update_zero_and_negative_flags(&mut self, result: u8) {
         self.status.set(CpuFlags::ZERO, result == 0);
 
-        // If result value is negative (8th bit set to 1)
+        // If result value is negative (7th bit set to 1)
         self.status.set(CpuFlags::NEGATIVE, result & 0b1000_0000 != 0);
     }
 
@@ -140,6 +142,23 @@ impl CPU {
                 let addr = base.wrapping_add(self.register_y as u16);
                 addr
             }
+            AddressingMode::Indirect => {
+                let indirect_addr = self.mem_read_u16(self.program_counter);
+
+                // Original 6502 CPU has a bug when indirect_addr falls on a page boundary
+                // (e.g 0xXXFF for XX in [00, FF]). In this case the LSB is fetched from 0xXXFF
+                // but MSB is taken from 0xXX00 (https://www.nesdev.org/obelisk-6502-guide/reference.html#JMP)
+                // Bug behaviour is enabled with INDIRECT_ADDRESSING_MODE_6502_BUG Flag
+                let addr = if INDIRECT_ADDRESSING_MODE_6502_BUG && (indirect_addr & 0x00FF == 0x00FF) {
+                    let lo = self.mem_read(indirect_addr);
+                    let hi = self.mem_read(indirect_addr & 0xFF00);
+                    (hi as u16) << 8 | (lo as u16)
+                } else {
+                    self.mem_read_u16(indirect_addr)
+                };
+
+                addr
+            }
             AddressingMode::Indirect_X => {
                 let base = self.mem_read(self.program_counter);
 
@@ -167,85 +186,67 @@ impl CPU {
     fn run(&mut self) {
         loop {
             let code = self.next_u8();
+            let program_counter_copy = self.program_counter;
             let opcode = ops::OPCODES_MAP.get(&code).unwrap();
             match opcode.op {
-                ops::OP::ADC => {
-                    let addr = self.get_operand_address(&opcode.mode);
-                    self.adc(addr);
-                },
-                ops::OP::SBC => {
-                    let addr = self.get_operand_address(&opcode.mode);
-                    self.sbc(addr);
-                }
-                ops::OP::INC => {
-                    let addr = self.get_operand_address(&opcode.mode);
-                    self.inc(addr);
-                },
+                ops::OP::ADC => self.adc(self.get_operand_address(&opcode.mode)),
+                ops::OP::SBC => self.sbc(self.get_operand_address(&opcode.mode)),
+                ops::OP::INC => self.inc(self.get_operand_address(&opcode.mode)),
                 ops::OP::INX => self.inx(),
                 ops::OP::INY => self.iny(),
-                ops::OP::DEC => {
-                    let addr = self.get_operand_address(&opcode.mode);
-                    self.dec(addr);
-                }
-                ops::OP::AND => {
-                    let addr = self.get_operand_address(&opcode.mode);
-                    self.and(addr);
-                }
-                ops::OP::EOR => {
-                    let addr = self.get_operand_address(&opcode.mode);
-                    self.eor(addr);
-                }
-                ops::OP::ORA => {
-                    let addr = self.get_operand_address(&opcode.mode);
-                    self.ora(addr);
-                }
+                ops::OP::DEC => self.dec(self.get_operand_address(&opcode.mode)),
+                ops::OP::DEX => self.dex(),
+                ops::OP::DEY => self.dey(),
+                ops::OP::CMP => self.compare(self.register_a, self.get_operand_address(&opcode.mode)),
+                ops::OP::CPX => self.compare(self.register_x, self.get_operand_address(&opcode.mode)),
+                ops::OP::CPY => self.compare(self.register_y, self.get_operand_address(&opcode.mode)),
+                ops::OP::AND => self.and(self.get_operand_address(&opcode.mode)),
+                ops::OP::EOR => self.eor(self.get_operand_address(&opcode.mode)),
+                ops::OP::ORA => self.ora(self.get_operand_address(&opcode.mode)),
                 ops::OP::ASL => {
                     if opcode.mode == AddressingMode::NoneAddressing {
                         self.asl_accumulator();
                     } else {
-                        let addr = self.get_operand_address(&opcode.mode);
-                        self.asl(addr)
+                        self.asl(self.get_operand_address(&opcode.mode));
                     }
                 }
                 ops::OP::LSR => {
                     if opcode.mode == AddressingMode::NoneAddressing {
                         self.lsr_accumulator();
                     } else {
-                        let addr = self.get_operand_address(&opcode.mode);
-                        self.lsr(addr)
+                        self.lsr(self.get_operand_address(&opcode.mode));
                     }
                 }
                 ops::OP::ROL => {
                     if opcode.mode == AddressingMode::NoneAddressing {
                         self.rol_accumulator();
                     } else {
-                        let addr = self.get_operand_address(&opcode.mode);
-                        self.rol(addr)
+                        self.rol(self.get_operand_address(&opcode.mode));
                     }
                 },
                 ops::OP::ROR => {
                     if opcode.mode == AddressingMode::NoneAddressing {
                         self.ror_accumulator();
                     } else {
-                        let addr = self.get_operand_address(&opcode.mode);
-                        self.ror(addr)
+                        self.ror(self.get_operand_address(&opcode.mode));
                     }
                 }
+                ops::OP::JMP => self.jmp(self.get_operand_address(&opcode.mode)),
                 ops::OP::BRK => return,
-                ops::OP::LDA => {
-                    let addr = self.get_operand_address(&opcode.mode);
-                    self.lda(addr);
-                },
-                ops::OP::NOP => todo!(),
-                ops::OP::STA => {
-                    let addr = self.get_operand_address(&opcode.mode);
-                    self.sta(addr);
-                },
+                ops::OP::LDA => self.lda(self.get_operand_address(&opcode.mode)),
+                ops::OP::NOP => continue,
+                ops::OP::STA => self.sta(self.get_operand_address(&opcode.mode)),
                 ops::OP::TAX => self.tax(),
             };
 
-            // Note might have to be careful here when doing a jump instruction
-            self.program_counter += (opcode.len - 1) as u16;
+            // Update program counter to account for additional bytes read
+            // -1 as we have already incremented program counter after reading opcode
+            // program_counter_copy == self.program_counter check for if pc was modified during an instruction (e.g jump command)
+            // in which case we do not modify further
+            if program_counter_copy == self.program_counter {
+                self.program_counter += (opcode.len - 1) as u16;
+            }
+
         }
     }
 
@@ -253,6 +254,17 @@ impl CPU {
         self.register_a = byte;
         self.update_zero_and_negative_flags(self.register_a);
     }
+
+    fn set_register_x(&mut self, byte: u8) {
+        self.register_x = byte;
+        self.update_zero_and_negative_flags(self.register_x);
+    }
+
+    fn set_register_y(&mut self, byte: u8) {
+        self.register_y = byte;
+        self.update_zero_and_negative_flags(self.register_y);
+    }
+
 
     // Ignoring decimal mode
     // http://www.righto.com/2012/12/the-6502-overflow-flag-explained.html
@@ -288,32 +300,40 @@ impl CPU {
 
     fn inc(&mut self, addr: u16) {
         let byte = self.mem_read(addr);
-        let result = if byte == 0b1111_1111 { 0 } else { byte + 1 };
+        let result = byte.wrapping_add(1);
         self.mem_write(addr, result);
         self.update_zero_and_negative_flags(result);
     }
 
     fn inx(&mut self) {
-        if self.register_x == 0b1111_1111 {
-            self.register_x = 0 // overflow to 0
-        } else {
-            self.register_x += 1;
-        }
-
-        self.update_zero_and_negative_flags(self.register_x)
+        self.set_register_x(self.register_x.wrapping_add(1));
     }
 
     fn iny(&mut self) {
-        if self.register_y == 0b1111_1111 {
-            self.register_y = 0 // overflow to 0
-        } else {
-            self.register_y += 1;
-        }
-
-        self.update_zero_and_negative_flags(self.register_y)
+        self.set_register_y(self.register_y.wrapping_add(1));
     }
 
-    // fn dec(&mut self)
+    fn dec(&mut self, addr: u16) {
+        let byte = self.mem_read(addr);
+        let result = byte.wrapping_sub(1);
+        self.mem_write(addr, result);
+        self.update_zero_and_negative_flags(result);
+    }
+
+    fn dex(&mut self) {
+        self.set_register_x(self.register_x.wrapping_sub(1));
+    }
+
+    fn dey(&mut self) {
+        self.set_register_y(self.register_y.wrapping_sub(1));
+    }
+
+    fn compare(&mut self, value: u8, addr: u16) {
+        let compare_with = self.mem_read(addr);
+        self.status.set(CpuFlags::CARRY, value >= compare_with);
+        self.status.set(CpuFlags::ZERO, value == compare_with);
+        self.status.set(CpuFlags::NEGATIVE, value.wrapping_sub(compare_with) & 0b1000_0000 != 0);
+    }
 
     fn and(&mut self, addr: u16) {
         let data = self.mem_read(addr);
@@ -332,10 +352,8 @@ impl CPU {
 
     fn asl(&mut self, addr: u16) {
         let data = self.mem_read(addr);
-
         // 7th bit is placed in the carry flag
         self.status.set(CpuFlags::CARRY, data >> 7 == 1);
-
         let shifted = data << 1;
         self.mem_write(addr, shifted);
         self.update_zero_and_negative_flags(shifted);
@@ -410,6 +428,10 @@ impl CPU {
         self.set_register_a(rotated);
     }
 
+    fn jmp(&mut self, addr: u16) {
+        self.program_counter = addr;
+    }
+
     fn lda(&mut self, addr: u16) {
         let byte = self.mem_read(addr);
         self.register_a = byte;
@@ -417,8 +439,7 @@ impl CPU {
     }
 
     fn tax(&mut self) {
-        self.register_x = self.register_a;
-        self.update_zero_and_negative_flags(self.register_x);
+        self.set_register_x(self.register_a);
     }
 
     fn sta(&mut self, addr: u16) {

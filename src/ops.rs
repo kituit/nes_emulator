@@ -10,6 +10,7 @@ pub enum AddressingMode {
     Absolute,
     Absolute_X,
     Absolute_Y,
+    Indirect, // Only used by jmp
     Indirect_X,
     Indirect_Y,
     NoneAddressing,
@@ -23,9 +24,14 @@ pub enum OP {
     ADC, // Add with Carry
     SBC, // Subtract with Carry
     INC, // Increment Memory
-    INX, // Increment X Register
-    INY, // Increment Y Register
+    INX, // Increment Register X
+    INY, // Increment Register Y
     DEC, // Decrement Memory
+    DEX, // Decement Register X
+    DEY, // Decrement Register Y
+    CMP, // Compare with Accumulator
+    CPX, // Compare with Register X
+    CPY, // Compare with Register Y
 
     // Logical
     AND, // Logical AND
@@ -37,6 +43,9 @@ pub enum OP {
     LSR, // Logical Shift Right
     ROL, // Rotate Left
     ROR, // Rotate Right
+
+    // Jumps + Branching
+    JMP, // Jump
 
     LDA, // Load Accumulator
 
@@ -96,6 +105,26 @@ lazy_static! {
         OpCode::new(0xce, OP::DEC, 3, 6, AddressingMode::Absolute),
         OpCode::new(0xde, OP::DEC, 3, 7, AddressingMode::Absolute_X),
 
+        OpCode::new(0xca, OP::DEX, 1, 2, AddressingMode::NoneAddressing),
+        OpCode::new(0x88, OP::DEY, 1, 2, AddressingMode::NoneAddressing),
+
+        OpCode::new(0xc9, OP::CMP, 2, 2, AddressingMode::Immediate),
+        OpCode::new(0xc5, OP::CMP, 2, 3, AddressingMode::ZeroPage),
+        OpCode::new(0xd5, OP::CMP, 2, 4, AddressingMode::ZeroPage_X),
+        OpCode::new(0xcd, OP::CMP, 3, 4, AddressingMode::Absolute),
+        OpCode::new(0xdd, OP::CMP, 3, 4/*+1 if page crossed*/, AddressingMode::Absolute_X),
+        OpCode::new(0xd9, OP::CMP, 3, 4/*+1 if page crossed*/, AddressingMode::Absolute_Y),
+        OpCode::new(0xc1, OP::CMP, 2, 6, AddressingMode::Indirect_X),
+        OpCode::new(0xd1, OP::CMP, 2, 5/*+1 if page crossed*/, AddressingMode::Indirect_Y),
+
+        OpCode::new(0xe0, OP::CPX, 2, 2, AddressingMode::Immediate),
+        OpCode::new(0xe4, OP::CPX, 2, 3, AddressingMode::ZeroPage),
+        OpCode::new(0xec, OP::CPX, 3, 4, AddressingMode::Absolute),
+
+        OpCode::new(0xc0, OP::CPY, 2, 2, AddressingMode::Immediate),
+        OpCode::new(0xc4, OP::CPY, 2, 3, AddressingMode::ZeroPage),
+        OpCode::new(0xcc, OP::CPY, 3, 4, AddressingMode::Absolute),
+
 
         /* Logical */
         OpCode::new(0x29, OP::AND, 2, 2, AddressingMode::Immediate),
@@ -151,6 +180,9 @@ lazy_static! {
         OpCode::new(0x6e, OP::ROR, 3, 6, AddressingMode::Absolute),
         OpCode::new(0x7e, OP::ROR, 3, 7, AddressingMode::Absolute_X),
 
+        /* Jumps + Branching */
+        OpCode::new(0x4c, OP::JMP, 3, 3, AddressingMode::Absolute),
+        OpCode::new(0x6c, OP::JMP, 3, 5, AddressingMode::Indirect),
 
         OpCode::new(0xaa, OP::TAX, 1, 2, AddressingMode::NoneAddressing),
 
