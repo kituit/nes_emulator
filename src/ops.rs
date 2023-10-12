@@ -3,6 +3,7 @@ use std::collections::HashMap;
 #[derive(Debug, PartialEq)]
 #[allow(non_camel_case_types)]
 pub enum AddressingMode {
+    Accumulator,
     Immediate,
     ZeroPage,
     ZeroPage_X,
@@ -13,7 +14,9 @@ pub enum AddressingMode {
     Indirect, // Only used by jmp
     Indirect_X,
     Indirect_Y,
-    NoneAddressing,
+    Implicit,
+    Relative,
+    // NoneAddressing,
 }
 
 pub enum OP {
@@ -46,6 +49,10 @@ pub enum OP {
 
     // Jumps + Branching
     JMP, // Jump
+    JSR, // Jump to Subroutine
+    RTS, // Return from Subroutine
+    RTI, // return from Interrupt
+    BNE, // Branch if Not Equal
 
     LDA, // Load Accumulator
 
@@ -69,9 +76,11 @@ impl OpCode {
 }
 
 lazy_static! {
+
+    // https://www.nesdev.org/obelisk-6502-guide/reference.html
     pub static ref CPU_OPS_CODES: Vec<OpCode> = vec![
-        OpCode::new(0x00, OP::BRK, 1, 7, AddressingMode::NoneAddressing),
-        OpCode::new(0xea, OP::NOP, 1, 2, AddressingMode::NoneAddressing),
+        OpCode::new(0x00, OP::BRK, 1, 7, AddressingMode::Implicit),
+        OpCode::new(0xea, OP::NOP, 1, 2, AddressingMode::Implicit),
 
         /* Arithmetic */
         OpCode::new(0x69, OP::ADC, 2, 2, AddressingMode::Immediate),
@@ -97,16 +106,16 @@ lazy_static! {
         OpCode::new(0xee, OP::INC, 3, 6, AddressingMode::Absolute),
         OpCode::new(0xfe, OP::INC, 3, 7, AddressingMode::Absolute_X),
 
-        OpCode::new(0xe8, OP::INX, 1, 2, AddressingMode::NoneAddressing),
-        OpCode::new(0xc8, OP::INY, 1, 2, AddressingMode::NoneAddressing),
+        OpCode::new(0xe8, OP::INX, 1, 2, AddressingMode::Implicit),
+        OpCode::new(0xc8, OP::INY, 1, 2, AddressingMode::Implicit),
 
         OpCode::new(0xc6, OP::DEC, 2, 5, AddressingMode::ZeroPage),
         OpCode::new(0xd6, OP::DEC, 2, 6, AddressingMode::ZeroPage_X),
         OpCode::new(0xce, OP::DEC, 3, 6, AddressingMode::Absolute),
         OpCode::new(0xde, OP::DEC, 3, 7, AddressingMode::Absolute_X),
 
-        OpCode::new(0xca, OP::DEX, 1, 2, AddressingMode::NoneAddressing),
-        OpCode::new(0x88, OP::DEY, 1, 2, AddressingMode::NoneAddressing),
+        OpCode::new(0xca, OP::DEX, 1, 2, AddressingMode::Implicit),
+        OpCode::new(0x88, OP::DEY, 1, 2, AddressingMode::Implicit),
 
         OpCode::new(0xc9, OP::CMP, 2, 2, AddressingMode::Immediate),
         OpCode::new(0xc5, OP::CMP, 2, 3, AddressingMode::ZeroPage),
@@ -156,25 +165,25 @@ lazy_static! {
 
 
         /* Shifts */
-        OpCode::new(0x0a, OP::ASL, 1, 2, AddressingMode::NoneAddressing),
+        OpCode::new(0x0a, OP::ASL, 1, 2, AddressingMode::Accumulator),
         OpCode::new(0x06, OP::ASL, 2, 5, AddressingMode::ZeroPage),
         OpCode::new(0x16, OP::ASL, 2, 6, AddressingMode::ZeroPage_X),
         OpCode::new(0x0e, OP::ASL, 3, 6, AddressingMode::Absolute),
         OpCode::new(0x1e, OP::ASL, 3, 7, AddressingMode::Absolute_X),
 
-        OpCode::new(0x4a, OP::LSR, 1, 2, AddressingMode::NoneAddressing),
+        OpCode::new(0x4a, OP::LSR, 1, 2, AddressingMode::Accumulator),
         OpCode::new(0x46, OP::LSR, 2, 5, AddressingMode::ZeroPage),
         OpCode::new(0x56, OP::LSR, 2, 6, AddressingMode::ZeroPage_X),
         OpCode::new(0x4e, OP::LSR, 3, 6, AddressingMode::Absolute),
         OpCode::new(0x5e, OP::LSR, 3, 7, AddressingMode::Absolute_X),
 
-        OpCode::new(0x2a, OP::ROL, 1, 2, AddressingMode::NoneAddressing),
+        OpCode::new(0x2a, OP::ROL, 1, 2, AddressingMode::Accumulator),
         OpCode::new(0x26, OP::ROL, 2, 5, AddressingMode::ZeroPage),
         OpCode::new(0x36, OP::ROL, 2, 6, AddressingMode::ZeroPage_X),
         OpCode::new(0x2e, OP::ROL, 3, 6, AddressingMode::Absolute),
         OpCode::new(0x3e, OP::ROL, 3, 7, AddressingMode::Absolute_X),
 
-        OpCode::new(0x6a, OP::ROR, 1, 2, AddressingMode::NoneAddressing),
+        OpCode::new(0x6a, OP::ROR, 1, 2, AddressingMode::Accumulator),
         OpCode::new(0x66, OP::ROR, 2, 5, AddressingMode::ZeroPage),
         OpCode::new(0x76, OP::ROR, 2, 6, AddressingMode::ZeroPage_X),
         OpCode::new(0x6e, OP::ROR, 3, 6, AddressingMode::Absolute),
@@ -184,7 +193,21 @@ lazy_static! {
         OpCode::new(0x4c, OP::JMP, 3, 3, AddressingMode::Absolute),
         OpCode::new(0x6c, OP::JMP, 3, 5, AddressingMode::Indirect),
 
-        OpCode::new(0xaa, OP::TAX, 1, 2, AddressingMode::NoneAddressing),
+        OpCode::new(0x20, OP::JSR, 3, 6, AddressingMode::Absolute),
+        OpCode::new(0x60, OP::RTS, 1, 6, AddressingMode::Implicit),
+
+        OpCode::new(0x40, OP::RTI, 1, 6, AddressingMode::Implicit),
+
+        OpCode::new(0xd0, OP::BNE, 2, 2 /*(+1 if branch succeeds +2 if to a new page)*/, AddressingMode::Relative),
+        // OpCode::new(0x70, "BVS", 2, 2 /*(+1 if branch succeeds +2 if to a new page)*/, AddressingMode::NoneAddressing),
+        // OpCode::new(0x50, "BVC", 2, 2 /*(+1 if branch succeeds +2 if to a new page)*/, AddressingMode::NoneAddressing),
+        // OpCode::new(0x30, "BMI", 2, 2 /*(+1 if branch succeeds +2 if to a new page)*/, AddressingMode::NoneAddressing),
+        // OpCode::new(0xf0, "BEQ", 2, 2 /*(+1 if branch succeeds +2 if to a new page)*/, AddressingMode::NoneAddressing),
+        // OpCode::new(0xb0, "BCS", 2, 2 /*(+1 if branch succeeds +2 if to a new page)*/, AddressingMode::NoneAddressing),
+        // OpCode::new(0x90, "BCC", 2, 2 /*(+1 if branch succeeds +2 if to a new page)*/, AddressingMode::NoneAddressing),
+        // OpCode::new(0x10, "BPL", 2, 2 /*(+1 if branch succeeds +2 if to a new page)*/, AddressingMode::NoneAddressing),
+
+        OpCode::new(0xaa, OP::TAX, 1, 2, AddressingMode::Implicit),
 
         OpCode::new(0xa9, OP::LDA, 2, 2, AddressingMode::Immediate),
         OpCode::new(0xa5, OP::LDA, 2, 3, AddressingMode::ZeroPage),

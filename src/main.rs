@@ -1,4 +1,4 @@
-use ops::AddressingMode;
+use ops::{AddressingMode, OpCode};
 
 pub mod ops;
 
@@ -8,6 +8,8 @@ extern crate lazy_static;
 use bitflags::bitflags;
 
 const INDIRECT_ADDRESSING_MODE_6502_BUG: bool = true;
+
+const STACK_BOTTOM: u16 = 0x0100;
 
 fn main() {
     // println!("{:8b}", 8 as i8);
@@ -41,6 +43,7 @@ struct CPU {
     register_y: u8, // Similar use case to register_x
     status: CpuFlags,
     program_counter: u16,
+    stack_pointer: u8, // Stack grows downwards. Points to the location of where next byte will be stored
     memory: [u8; 0xFFFF]
 }
 
@@ -52,6 +55,7 @@ impl CPU {
             register_y: 0,
             status: CpuFlags::default(),
             program_counter: 0,
+            stack_pointer: 0,
             memory: [0; 0xFFFF]
         }
     }
@@ -62,7 +66,10 @@ impl CPU {
         self.status = CpuFlags::default();
 
         // Address at 0xFFFC defined to contain pointer to where program should start
-        self.program_counter = self.mem_read_u16((0xFFFC));
+        self.program_counter = self.mem_read_u16(0xFFFC);
+
+        // Point to the top of stack and grow downwards;
+        self.stack_pointer = 0xFF;
     }
 
     fn update_zero_and_negative_flags(&mut self, result: u8) {
@@ -77,8 +84,8 @@ impl CPU {
     }
 
     fn mem_read_u16(&self, addr: u16) -> u16 {
-        let lo = self.memory[addr as usize];
-        let hi = self.memory[(addr + 1) as usize];
+        let lo = self.mem_read(addr);
+        let hi = self.mem_read(addr.wrapping_add(1));
         u16::from_le_bytes([lo, hi])
     }
 
@@ -90,6 +97,33 @@ impl CPU {
         let [lo, hi] = value.to_le_bytes();
         self.memory[addr as usize] = lo;
         self.memory[(addr + 1) as usize] = hi;
+    }
+
+    fn stack_address(&self) -> u16 {
+        STACK_BOTTOM + (self.stack_pointer as u16)
+    }
+
+    fn stack_push(&mut self, value: u8) {
+        self.mem_write(self.stack_address(), value);
+        self.stack_pointer = self.stack_pointer.wrapping_sub(1);
+    }
+
+    fn stack_push_u16(&mut self, value: u16) {
+        let hi = (value >> 8) as u8;
+        let lo = (value & 0x00FF) as u8;
+        self.stack_push(lo);
+        self.stack_push(hi);
+    }
+
+    fn stack_pop(&mut self) -> u8 {
+        self.stack_pointer = self.stack_pointer.wrapping_add(1);
+        self.mem_read(self.stack_address())
+    }
+
+    fn stack_pop_u16(&mut self) -> u16 {
+        let hi = self.stack_pop() as u16;
+        let lo = self.stack_pop() as u16;
+        hi << 8 | lo
     }
 
     fn load_program(&mut self, program: &[u8]) {
@@ -119,30 +153,50 @@ impl CPU {
     fn get_operand_address(&self, mode: &AddressingMode) -> u16 {
 
         match mode {
-            AddressingMode::Immediate => self.program_counter,
-            AddressingMode::ZeroPage  => self.mem_read(self.program_counter) as u16,
-            AddressingMode::Absolute => self.mem_read_u16(self.program_counter),
+            AddressingMode::Immediate => {
+                // Specify 8 bit constant immediately following opcode
+                self.program_counter
+            },
+            AddressingMode::ZeroPage  => {
+                // Specify 8 bit address offset XX that yields full address 0x00XX
+                // Allows efficient access to 0x0000 to 0x00FF
+                let offset = self.mem_read(self.program_counter);
+                // 0x0000 | offset as u16
+                offset as u16
+            }
+            AddressingMode::Absolute => {
+                // Specify full 16 bit address
+                self.mem_read_u16(self.program_counter)
+            },
             AddressingMode::ZeroPage_X => {
+                // Specify 8 bit address that yields full address when added to current value of
+                // x register
                 let pos = self.mem_read(self.program_counter);
                 let addr = pos.wrapping_add(self.register_x) as u16;
                 addr
             }
             AddressingMode::ZeroPage_Y => {
+                // Specify 8 bit address that yields full address when added to current value of
+                // y register
                 let pos = self.mem_read(self.program_counter);
                 let addr = pos.wrapping_add(self.register_y) as u16;
                 addr
             }
             AddressingMode::Absolute_X => {
+                // Specify full 16 bit address, and then add the current value of the x register
                 let base = self.mem_read_u16(self.program_counter);
                 let addr = base.wrapping_add(self.register_x as u16);
                 addr
             }
             AddressingMode::Absolute_Y => {
+                // Specify full 16 bit address, and then add the current value of the y register
                 let base = self.mem_read_u16(self.program_counter);
                 let addr = base.wrapping_add(self.register_y as u16);
                 addr
             }
             AddressingMode::Indirect => {
+                // Specify full 16 bit address. This identifies the location of another 16 bit address which
+                // is the real target of the instruction
                 let indirect_addr = self.mem_read_u16(self.program_counter);
 
                 // Original 6502 CPU has a bug when indirect_addr falls on a page boundary
@@ -160,23 +214,32 @@ impl CPU {
                 addr
             }
             AddressingMode::Indirect_X => {
+                // Specify an 8 bit offset. This yields a 16 bit indirect address when added to the x register.
+                // This identifies the location of another 16 bit address which is the real target of the instruction
                 let base = self.mem_read(self.program_counter);
 
-                let ptr: u8 = (base as u8).wrapping_add(self.register_x);
-                let lo = self.mem_read(ptr as u16);
-                let hi = self.mem_read(ptr.wrapping_add(1) as u16);
-                (hi as u16) << 8 | (lo as u16)
+                let ptr = base.wrapping_add(self.register_x);
+                self.mem_read_u16(ptr as u16)
             }
             AddressingMode::Indirect_Y => {
+                // Specify an 8 bit offset XX which yields full 16 bit address 0x00FF. This 16 bit address points
+                // to the least significant byte of a 16 bit address. The current value of the y register is then
+                // added to yield the final address
                 let base = self.mem_read(self.program_counter);
 
                 let lo = self.mem_read(base as u16);
-                let hi = self.mem_read((base as u8).wrapping_add(1) as u16);
+                let hi = self.mem_read(base.wrapping_add(1) as u16);
                 let deref_base = (hi as u16) << 8 | (lo as u16);
                 let deref = deref_base.wrapping_add(self.register_y as u16);
                 deref
             }
-            AddressingMode::NoneAddressing => {
+            AddressingMode::Relative => {
+                // Specify a signed 8 bit relative offset (-128 to +127), which is added to the program counter
+                let offset = self.mem_read(self.program_counter) as i8;
+                // .wrapping_add(1) to account for the fact that program counter is incremented during execution
+                self.program_counter.wrapping_add(1).wrapping_add_signed(offset as i16)
+            }
+            AddressingMode::Implicit | AddressingMode::Accumulator => {
                 panic!("mode {:?} is not supported", mode);
             }
         }
@@ -204,34 +267,38 @@ impl CPU {
                 ops::OP::EOR => self.eor(self.get_operand_address(&opcode.mode)),
                 ops::OP::ORA => self.ora(self.get_operand_address(&opcode.mode)),
                 ops::OP::ASL => {
-                    if opcode.mode == AddressingMode::NoneAddressing {
+                    if opcode.mode == AddressingMode::Accumulator {
                         self.asl_accumulator();
                     } else {
                         self.asl(self.get_operand_address(&opcode.mode));
                     }
                 }
                 ops::OP::LSR => {
-                    if opcode.mode == AddressingMode::NoneAddressing {
+                    if opcode.mode == AddressingMode::Accumulator {
                         self.lsr_accumulator();
                     } else {
                         self.lsr(self.get_operand_address(&opcode.mode));
                     }
                 }
                 ops::OP::ROL => {
-                    if opcode.mode == AddressingMode::NoneAddressing {
+                    if opcode.mode == AddressingMode::Accumulator {
                         self.rol_accumulator();
                     } else {
                         self.rol(self.get_operand_address(&opcode.mode));
                     }
                 },
                 ops::OP::ROR => {
-                    if opcode.mode == AddressingMode::NoneAddressing {
+                    if opcode.mode == AddressingMode::Accumulator {
                         self.ror_accumulator();
                     } else {
                         self.ror(self.get_operand_address(&opcode.mode));
                     }
                 }
                 ops::OP::JMP => self.jmp(self.get_operand_address(&opcode.mode)),
+                ops::OP::JSR => self.jsr(&opcode),
+                ops::OP::RTS => self.rts(),
+                ops::OP::RTI => self.rti(),
+                ops::OP::BNE => self.branch(self.get_operand_address(&opcode.mode), !self.status.contains(CpuFlags::ZERO)),
                 ops::OP::BRK => return,
                 ops::OP::LDA => self.lda(self.get_operand_address(&opcode.mode)),
                 ops::OP::NOP => continue,
@@ -430,6 +497,29 @@ impl CPU {
 
     fn jmp(&mut self, addr: u16) {
         self.program_counter = addr;
+    }
+
+    fn jsr(&mut self, op: &OpCode) {
+        let next_op_address = self.program_counter + ((op.len - 1) as u16);
+        self.stack_push_u16(next_op_address - 1);
+        let target_address = self.get_operand_address(&op.mode);
+        self.program_counter = target_address;
+    }
+
+    fn rts(&mut self) {
+        self.program_counter = self.stack_pop_u16() + 1
+    }
+
+    fn rti(&mut self) {
+        let flags = self.stack_pop();
+        self.status = CpuFlags::from_bits_retain(flags);
+        self.program_counter = self.stack_pop_u16();
+    }
+
+    fn branch(&mut self, addr: u16, condition: bool) {
+        if condition {
+            self.program_counter = addr;
+        }
     }
 
     fn lda(&mut self, addr: u16) {
